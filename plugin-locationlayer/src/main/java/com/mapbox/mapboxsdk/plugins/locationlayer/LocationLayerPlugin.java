@@ -71,11 +71,12 @@ public class LocationLayerPlugin implements LocationEngineListener, CompassListe
 
   private Location location;
 
+  private CameraPosition lastCameraPosition;
+
   private OnLocationLayerClickListener onLocationLayerClickListener;
 
   @StyleRes
   private int styleRes;
-
 
   /**
    * Construct a {@code LocationLayerPlugin}
@@ -174,6 +175,7 @@ public class LocationLayerPlugin implements LocationEngineListener, CompassListe
    */
   public int getLocationLayerMode() {
     return locationLayerMode;
+    updateLayerOffsets(true);
   }
 
   @Override
@@ -324,6 +326,51 @@ public class LocationLayerPlugin implements LocationEngineListener, CompassListe
     }
   }
 
+  private void initialize() {
+    AppCompatDelegate.setCompatVectorFromResourcesEnabled(true);
+
+    mapView.addOnMapChangedListener(onMapChangedListener);
+    mapboxMap.addOnMapClickListener(onMapClickListener);
+    mapboxMap.addOnMapLongClickListener(onMapLongClickListener);
+
+    locationLayer = new LocationLayer(mapView, mapboxMap, options);
+    locationLayerCamera = new LocationLayerCamera(
+      mapView.getContext(), mapboxMap, cameraTrackingChangedListener, options, onCameraMoveInvalidateListener);
+    locationLayerAnimator = new LocationLayerAnimator();
+    locationLayerAnimator.addLayerListener(locationLayer);
+    locationLayerAnimator.addCameraListener(locationLayerCamera);
+
+    compassManager = new CompassManager(mapView.getContext());
+    compassManager.addCompassListener(compassListener);
+    staleStateManager = new StaleStateManager(onLocationStaleListener, options.staleStateTimeout());
+
+    updateMapWithOptions(options);
+
+    enableLocationLayerPlugin();
+  }
+
+  @SuppressLint("MissingPermission")
+  private void enableLocationLayerPlugin() {
+    isEnabled = true;
+    onStart();
+    locationLayer.show();
+  }
+
+  private void disableLocationLayerPlugin() {
+    isEnabled = false;
+    onStop();
+    locationLayer.hide();
+  }
+
+  private void updateMapWithOptions(final LocationLayerOptions options) {
+    mapboxMap.setPadding(
+      options.padding()[0], options.padding()[1], options.padding()[2], options.padding()[3]
+    );
+
+    mapboxMap.setMaxZoomPreference(options.maxZoom());
+    mapboxMap.setMinZoomPreference(options.minZoom());
+  }
+
   /**
    * Adds a listener that gets invoked when the user clicks the location layer.
    *
@@ -336,12 +383,65 @@ public class LocationLayerPlugin implements LocationEngineListener, CompassListe
     }
   }
 
-  @Override
-  public void onMapClick(@NonNull LatLng point) {
-    if (onLocationLayerClickListener != null && locationLayer.onMapClick(point)) {
-      onLocationLayerClickListener.onLocationLayerClick();
+  private void updateCompassHeading(float heading) {
+    locationLayerAnimator.feedNewCompassBearing(heading, mapboxMap.getCameraPosition());
+  }
+
+  /**
+   * If the locationEngine contains a last location value, we use it for the initial location layer
+   * position.
+   */
+  @SuppressWarnings( {"MissingPermission"})
+  private void setLastLocation() {
+    if (locationEngine != null) {
+      updateLocation(locationEngine.getLastLocation());
     }
   }
+
+  private void setLastCompassHeading() {
+    updateCompassHeading(compassManager.getLastHeading());
+  }
+
+  private void updateLayerOffsets(boolean forceUpdate) {
+    CameraPosition position = mapboxMap.getCameraPosition();
+    if (lastCameraPosition == null || forceUpdate) {
+      lastCameraPosition = position;
+      locationLayer.updateForegroundBearing((float) position.bearing);
+      locationLayer.updateForegroundOffset(position.tilt);
+      locationLayer.updateAccuracyRadius(getLastKnownLocation());
+      return;
+    }
+
+    if (position.bearing != lastCameraPosition.bearing) {
+      locationLayer.updateForegroundBearing((float) position.bearing);
+    }
+    if (position.tilt != lastCameraPosition.tilt) {
+      locationLayer.updateForegroundOffset(position.tilt);
+    }
+    if (position.zoom != lastCameraPosition.zoom) {
+      locationLayer.updateAccuracyRadius(getLastKnownLocation());
+    }
+    lastCameraPosition = position;
+  }
+
+  private OnCameraMoveListener onCameraMoveListener = new OnCameraMoveListener() {
+
+    @Override
+    public void onCameraMove() {
+      updateLayerOffsets(false);
+    }
+  };
+
+  private OnMapClickListener onMapClickListener = new OnMapClickListener() {
+    @Override
+    public void onMapClick(@NonNull LatLng point) {
+      if (!onLocationLayerClickListeners.isEmpty() && locationLayer.onMapClick(point)) {
+        for (OnLocationLayerClickListener listener : onLocationLayerClickListeners) {
+          listener.onLocationLayerClick();
+        }
+      }
+    }
+  };
 
   @Override
   @SuppressWarnings( {"MissingPermission"})
